@@ -48,29 +48,92 @@ func run(args []string) error {
 		return err
 	}
 	implementation := service.New(storage)
-	handler := api.Handler(api.NewStrictHandler(implementation, nil))
+	handler := requestLogger(api.Handler(api.NewStrictHandler(implementation, nil)), log.Default())
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.port),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	serverContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() {
-		<-shutdownContext.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			log.Printf("graceful shutdown failed: %v", err)
-		}
-	}()
 
 	log.Printf("object server listening on %s with %s backend", server.Addr, cfg.backend)
-	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	serveErrors := make(chan error, 1)
+	go func() {
+		serveErrors <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve HTTP: %w", err)
+		}
+		return nil
+	case <-serverContext.Done():
+		log.Printf("shutdown signal received; waiting for active requests")
+	}
+
+	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownContext); err != nil {
+		_ = server.Close()
+		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	if err := <-serveErrors; !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
+	log.Printf("server stopped")
 	return nil
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	if r.status != 0 {
+		return
+	}
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(body)
+}
+
+func requestLogger(next http.Handler, logger *log.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := &responseRecorder{ResponseWriter: w}
+		started := time.Now()
+		next.ServeHTTP(recorder, r)
+
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		bucket := r.PathValue("bucket")
+		if bucket == "" {
+			bucket = "-"
+		}
+		objectID := r.PathValue("objectID")
+		if objectID == "" {
+			objectID = "-"
+		}
+		logger.Printf(
+			"request method=%s bucket=%q object=%q status=%d duration=%s",
+			r.Method,
+			bucket,
+			objectID,
+			status,
+			time.Since(started).Round(time.Microsecond),
+		)
+	})
 }
 
 func parseConfig(args []string, getenv func(string) string) (config, error) {

@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestParseConfigDefaults(t *testing.T) {
 	cfg, err := parseConfig(nil, func(string) string { return "" })
@@ -50,5 +57,52 @@ func TestParseConfigRejectsInvalidValues(t *testing.T) {
 				t.Fatal("parseConfig() error = nil")
 			}
 		})
+	}
+}
+
+func TestRequestLogger(t *testing.T) {
+	var output bytes.Buffer
+	logger := log.New(&output, "", 0)
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /objects/{bucket}/{objectID}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	})
+	handler := requestLogger(mux, logger)
+
+	request := httptest.NewRequest(http.MethodPut, "/objects/documents/welcome", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	logLine := output.String()
+	for _, expected := range []string{
+		"method=PUT",
+		"bucket=\"documents\"",
+		"object=\"welcome\"",
+		"status=201",
+	} {
+		if !strings.Contains(logLine, expected) {
+			t.Errorf("log output %q does not contain %q", logLine, expected)
+		}
+	}
+}
+
+func TestRequestLoggerForUnmatchedRoute(t *testing.T) {
+	var output bytes.Buffer
+	logger := log.New(&output, "", 0)
+	handler := requestLogger(http.NewServeMux(), logger)
+
+	request := httptest.NewRequest(http.MethodGet, "/unknown", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	logLine := output.String()
+	for _, expected := range []string{
+		"bucket=\"-\"",
+		"object=\"-\"",
+		"status=404",
+	} {
+		if !strings.Contains(logLine, expected) {
+			t.Errorf("log output %q does not contain %q", logLine, expected)
+		}
 	}
 }
