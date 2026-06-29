@@ -27,3 +27,7 @@ For example:
 OBJECT_STORE_PORT=9090 OBJECT_STORE_BACKEND=disk \
   OBJECT_STORE_DATA_DIR=./objects go run ./src/cmd
 ```
+
+## Suggested future improvements
+ - Dockerfile (and running the tests in a container)
+ - using an actual test framework for E2Es

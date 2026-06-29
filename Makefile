@@ -2,7 +2,7 @@ GO ?= go
 CMD ?= ./src/cmd
 BIN ?= bin/object-server
 
-.PHONY: run run-disk test build
+.PHONY: run run-disk test test-e2e build
 
 run:
 	$(GO) run $(CMD)
@@ -14,6 +14,9 @@ run-disk:
 
 test:
 	$(GO) test ./...
+
+test-e2e: build
+	bash test/e2e.sh $(BIN)
 
 build:
 	mkdir -p $(dir $(BIN))
