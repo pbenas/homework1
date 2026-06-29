@@ -1,0 +1,151 @@
+openapi: 3.1.0
+info:
+  title: Bucketed Object Storage API
+  version: 1.0.0
+  description: |
+    Stores immutable UTF-8 text objects identified by a bucket and object ID.
+    Object IDs and object contents are unique within a bucket. Identical content
+    may be stored independently in different buckets.
+
+servers:
+  - url: http://localhost:{port}
+    description: Locally running object storage service
+    variables:
+      port:
+        default: "8080"
+        description: User-configured HTTP port
+
+tags:
+  - name: Objects
+    description: Store, retrieve, and delete text objects.
+
+paths:
+  /objects/{bucket}/{objectID}:
+    parameters:
+      - $ref: "#/components/parameters/Bucket"
+      - $ref: "#/components/parameters/ObjectID"
+
+    put:
+      tags:
+        - Objects
+      operationId: createObject
+      summary: Upload an object
+      description: |
+        Creates an immutable text object.
+
+        If the requested object ID already exists in the bucket, the request is
+        rejected and the existing object is referenced. Otherwise, if the same
+        text is already stored under another ID in the bucket, the request is
+        rejected and that original object is referenced. ID conflicts therefore
+        take precedence over duplicate-content conflicts.
+      requestBody:
+        required: true
+        description: The UTF-8 text to store. Empty text is valid.
+        content:
+          text/plain:
+            schema:
+              type: string
+            examples:
+              greeting:
+                summary: A text object
+                value: Hello, world!
+      responses:
+        "201":
+          description: Object created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObjectReference"
+              examples:
+                created:
+                  value:
+                    id: welcome
+        "409":
+          description: |
+            The requested object ID is occupied or the submitted text already
+            exists in this bucket. The response identifies the existing object.
+          headers:
+            Location:
+              $ref: "#/components/headers/ObjectLocation"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObjectReference"
+              examples:
+                existingObject:
+                  value:
+                    id: original-object
+
+    get:
+      tags:
+        - Objects
+      operationId: getObject
+      summary: Download an object
+      responses:
+        "200":
+          description: Object found.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                object:
+                  value: Hello, world!
+        "404":
+          description: Object not found.
+
+    delete:
+      tags:
+        - Objects
+      operationId: deleteObject
+      summary: Delete an object
+      responses:
+        "200":
+          description: Object deleted.
+        "404":
+          description: Object not found.
+
+components:
+  parameters:
+    Bucket:
+      name: bucket
+      in: path
+      required: true
+      description: Bucket name and content-deduplication namespace.
+      schema:
+        type: string
+        minLength: 1
+        pattern: "^[^/]+$"
+      example: documents
+
+    ObjectID:
+      name: objectID
+      in: path
+      required: true
+      description: Object identifier, unique within its bucket.
+      schema:
+        type: string
+        minLength: 1
+        pattern: "^[^/]+$"
+      example: welcome
+
+  headers:
+    ObjectLocation:
+      description: Relative URI of the existing object.
+      required: true
+      schema:
+        type: string
+      example: /objects/documents/original-object
+
+  schemas:
+    ObjectReference:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Identifier of the created or existing object.
+          example: welcome
