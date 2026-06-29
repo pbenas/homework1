@@ -2,7 +2,7 @@ GO ?= go
 CMD ?= ./src/cmd
 BIN ?= bin/object-server
 
-.PHONY: run run-disk test test-e2e build
+.PHONY: run run-disk test test-e2e coverage build
 
 run:
 	$(GO) run $(CMD)
@@ -17,6 +17,12 @@ test:
 
 test-e2e: build
 	bash test/e2e.sh $(BIN)
+
+coverage:
+	@COVERAGE_FILE="$$(mktemp)"; \
+		trap 'rm -f "$$COVERAGE_FILE"' EXIT; \
+		$(GO) test ./... -covermode=atomic -coverprofile="$$COVERAGE_FILE"; \
+		$(GO) tool cover -func="$$COVERAGE_FILE" | tail -n 1
 
 build:
 	mkdir -p $(dir $(BIN))

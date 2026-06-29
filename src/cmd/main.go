@@ -43,22 +43,25 @@ func run(args []string) error {
 		return err
 	}
 
+	serverContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runServer(serverContext, cfg, log.Default())
+}
+
+func runServer(serverContext context.Context, cfg config, logger *log.Logger) error {
 	storage, err := newStore(cfg)
 	if err != nil {
 		return err
 	}
 	implementation := service.New(storage)
-	handler := requestLogger(api.Handler(api.NewStrictHandler(implementation, nil)), log.Default())
+	handler := requestLogger(api.Handler(api.NewStrictHandler(implementation, nil)), logger)
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.port),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	serverContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	log.Printf("object server listening on %s with %s backend", server.Addr, cfg.backend)
+	logger.Printf("object server listening on %s with %s backend", server.Addr, cfg.backend)
 	serveErrors := make(chan error, 1)
 	go func() {
 		serveErrors <- server.ListenAndServe()
@@ -71,7 +74,7 @@ func run(args []string) error {
 		}
 		return nil
 	case <-serverContext.Done():
-		log.Printf("shutdown signal received; waiting for active requests")
+		logger.Printf("shutdown signal received; waiting for active requests")
 	}
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -83,7 +86,7 @@ func run(args []string) error {
 	if err := <-serveErrors; !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
-	log.Printf("server stopped")
+	logger.Printf("server stopped")
 	return nil
 }
 

@@ -1,7 +1,8 @@
 ## homework1
 Tools used: 
  - OpenAPI Codex (gpt-5.6-sol default)
-  - task to swagger spec
+  - task.md to swagger spec
+  - unit & e2e tests generation
  - oapi-codegen
 
 ## Running the server
@@ -31,3 +32,5 @@ OBJECT_STORE_PORT=9090 OBJECT_STORE_BACKEND=disk \
 ## Suggested future improvements
  - Dockerfile (and running the tests in a container)
  - using an actual test framework for E2Es
+ - SSL
+

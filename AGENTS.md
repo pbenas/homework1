@@ -45,6 +45,7 @@ make run       # Run with the in-memory backend
 make run-disk  # Run with disk storage in a new temporary directory
 make test      # Run Go tests
 make test-e2e  # Build and run external tests against both backends
+make coverage  # Run unit tests and print overall coverage
 make build     # Build bin/object-server
 ```
 
