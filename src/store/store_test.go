@@ -2,11 +2,13 @@ package store
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStores(t *testing.T) {
@@ -69,6 +71,41 @@ func TestConflictError(t *testing.T) {
 	err := (&ConflictError{ExistingID: "original"}).Error()
 	if err != `object conflicts with "original"` {
 		t.Fatalf("Error() = %q", err)
+	}
+}
+
+func TestMemoryHashIndexIsCollisionSafeAndMaintained(t *testing.T) {
+	storage := NewMemory()
+	target := []byte("target")
+	hash := sha256.Sum256(target)
+	storage.buckets["bucket"] = &memoryBucket{
+		byID: map[string]memoryObject{
+			"collision": {data: []byte("different"), hash: hash},
+		},
+		byHash: map[[sha256.Size]byte][]string{
+			hash: {"collision"},
+		},
+	}
+
+	if err := storage.Create("bucket", "original", target); err != nil {
+		t.Fatalf("Create() with simulated hash collision error = %v", err)
+	}
+	if IDs := storage.buckets["bucket"].byHash[hash]; len(IDs) != 2 {
+		t.Fatalf("hash index IDs = %v, want two collision candidates", IDs)
+	}
+	assertConflict(t, storage.Create("bucket", "duplicate", target), "original")
+
+	if err := storage.Delete("bucket", "original"); err != nil {
+		t.Fatal(err)
+	}
+	if IDs := storage.buckets["bucket"].byHash[hash]; len(IDs) != 1 || IDs[0] != "collision" {
+		t.Fatalf("hash index after delete = %v", IDs)
+	}
+	if err := storage.Delete("bucket", "collision"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := storage.buckets["bucket"]; exists {
+		t.Fatal("empty bucket and hash index were not removed")
 	}
 }
 
@@ -292,6 +329,62 @@ func TestDiskConcurrentInstancesDeduplicate(t *testing.T) {
 	}
 	if created != 1 || conflicted != instances-1 {
 		t.Fatalf("created=%d conflicted=%d", created, conflicted)
+	}
+}
+
+func TestDiskBucketLockAllowsReadersAndBlocksWriter(t *testing.T) {
+	storage, err := NewDisk(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+
+	readerRelease := make(chan struct{})
+	readerEntered := make(chan struct{}, 2)
+	errors := make(chan error, 3)
+	for range 2 {
+		go func() {
+			errors <- storage.withBucketLock("bucket", false, func() error {
+				readerEntered <- struct{}{}
+				<-readerRelease
+				return nil
+			})
+		}()
+	}
+	for range 2 {
+		select {
+		case <-readerEntered:
+		case <-time.After(time.Second):
+			t.Fatal("shared bucket locks did not run concurrently")
+		}
+	}
+
+	writerEntered := make(chan struct{})
+	writerRelease := make(chan struct{})
+	go func() {
+		errors <- storage.withBucketLock("bucket", true, func() error {
+			close(writerEntered)
+			<-writerRelease
+			return nil
+		})
+	}()
+	select {
+	case <-writerEntered:
+		t.Fatal("exclusive bucket lock entered while readers were active")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(readerRelease)
+	select {
+	case <-writerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("exclusive bucket lock did not enter after readers exited")
+	}
+	close(writerRelease)
+	for range 3 {
+		if err := <-errors; err != nil {
+			t.Fatalf("bucket lock error = %v", err)
+		}
 	}
 }
 

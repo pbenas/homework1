@@ -89,9 +89,10 @@ It translates storage results into API responses:
 Defines the storage interface, shared errors, and both backend implementations.
 All backends are safe for concurrent use.
 
-The memory backend stores a map of buckets, each containing object IDs and byte
-content. Data is copied when written and read so callers cannot mutate stored
-objects.
+The memory backend stores object IDs and a per-bucket SHA-256 content index.
+Duplicate lookup is constant-time by digest, with byte comparison retained for
+collision safety. Data is copied when written and read so callers cannot mutate
+stored objects.
 
 The disk backend stores one directory per bucket and one file per object.
 Bucket and object names are URL-safe base64 encoded, and all data access uses
@@ -101,6 +102,10 @@ duplicate-content lookups; an explicit completion marker lets interrupted
 legacy-index migrations resume safely. Per-bucket advisory locks serialize
 separate server processes sharing the directory, while exclusive file creation
 and stale-index recovery make writes interruption-safe.
+
+Large object hashes are calculated before acquiring mutation locks. Reads use
+shared per-bucket locks, while creates and deletes use exclusive locks, allowing
+independent reads and buckets to proceed concurrently.
 
 The disk backend's cross-process locking uses Unix `flock` and `O_NOFOLLOW`, so
 the current implementation is supported on Unix-like operating systems. The

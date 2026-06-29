@@ -26,11 +26,14 @@ const (
 // File locks serialize mutations across Disk values and server processes that
 // share the same root.
 type Disk struct {
-	root string
-	fs   *os.Root
-	mu   sync.Mutex
-	stop runtime.Cleanup
-	once sync.Once
+	root        string
+	fs          *os.Root
+	mu          sync.RWMutex
+	closed      bool
+	bucketMu    sync.Mutex
+	bucketLocks map[string]*sync.RWMutex
+	stop        runtime.Cleanup
+	once        sync.Once
 }
 
 func NewDisk(root string) (*Disk, error) {
@@ -52,7 +55,11 @@ func NewDisk(root string) (*Disk, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open disk data directory: %w", err)
 	}
-	storage := &Disk{root: root, fs: rootFS}
+	storage := &Disk{
+		root:        root,
+		fs:          rootFS,
+		bucketLocks: make(map[string]*sync.RWMutex),
+	}
 	storage.stop = runtime.AddCleanup(storage, func(root *os.Root) {
 		_ = root.Close()
 	}, rootFS)
@@ -67,6 +74,7 @@ func (s *Disk) Close() error {
 	defer s.mu.Unlock()
 	var closeErr error
 	s.once.Do(func() {
+		s.closed = true
 		s.stop.Stop()
 		closeErr = s.fs.Close()
 	})
@@ -74,10 +82,15 @@ func (s *Disk) Close() error {
 }
 
 func (s *Disk) Create(bucket, objectID string, data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Hashing can dominate large creates, so keep it outside the lifecycle and
+	// bucket locks. Only the index/object commit needs serialization.
+	hash := contentHash(data)
+	if err := s.beginOperation(); err != nil {
+		return err
+	}
+	defer s.endOperation()
 
-	return s.withBucketLock(bucket, func() error {
+	return s.withBucketLock(bucket, true, func() error {
 		bucketPath, err := s.ensureBucket(bucket)
 		if err != nil {
 			return err
@@ -89,7 +102,7 @@ func (s *Disk) Create(bucket, objectID string, data []byte) error {
 			return &ConflictError{ExistingID: objectID}
 		}
 
-		indexPath := filepath.Join(bucketPath, indexDirectory, contentHash(data))
+		indexPath := filepath.Join(bucketPath, indexDirectory, hash)
 		existingID, err := s.readRegularFile(indexPath)
 		if err == nil {
 			decoded, decodeErr := decodeName(string(existingID))
@@ -133,11 +146,13 @@ func (s *Disk) Create(bucket, objectID string, data []byte) error {
 }
 
 func (s *Disk) Get(bucket, objectID string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.beginOperation(); err != nil {
+		return nil, err
+	}
+	defer s.endOperation()
 
 	var data []byte
-	err := s.withBucketLock(bucket, func() error {
+	err := s.withBucketLock(bucket, false, func() error {
 		bucketPath, err := s.existingBucket(bucket)
 		if err != nil {
 			return err
@@ -155,10 +170,12 @@ func (s *Disk) Get(bucket, objectID string) ([]byte, error) {
 }
 
 func (s *Disk) Delete(bucket, objectID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if err := s.beginOperation(); err != nil {
+		return err
+	}
+	defer s.endOperation()
 
-	return s.withBucketLock(bucket, func() error {
+	return s.withBucketLock(bucket, true, func() error {
 		bucketPath, err := s.existingBucket(bucket)
 		if err != nil {
 			return err
@@ -188,7 +205,29 @@ func (s *Disk) Delete(bucket, objectID string) error {
 	})
 }
 
-func (s *Disk) withBucketLock(bucket string, operation func() error) error {
+func (s *Disk) beginOperation() error {
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return errors.New("disk store is closed")
+	}
+	return nil
+}
+
+func (s *Disk) endOperation() {
+	s.mu.RUnlock()
+}
+
+func (s *Disk) withBucketLock(bucket string, exclusive bool, operation func() error) error {
+	bucketLock := s.bucketLock(bucket)
+	if exclusive {
+		bucketLock.Lock()
+		defer bucketLock.Unlock()
+	} else {
+		bucketLock.RLock()
+		defer bucketLock.RUnlock()
+	}
+
 	lockPath := "." + encodeName(bucket) + ".lock"
 	lockDescriptor, err := syscall.Open(filepath.Join(s.root, lockPath), syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
@@ -196,8 +235,12 @@ func (s *Disk) withBucketLock(bucket string, operation func() error) error {
 	}
 	lock := os.NewFile(uintptr(lockDescriptor), lockPath)
 	defer lock.Close()
+	lockMode := syscall.LOCK_SH
+	if exclusive {
+		lockMode = syscall.LOCK_EX
+	}
 	for {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+		err = syscall.Flock(int(lock.Fd()), lockMode)
 		if !errors.Is(err, syscall.EINTR) {
 			break
 		}
@@ -207,6 +250,18 @@ func (s *Disk) withBucketLock(bucket string, operation func() error) error {
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
 	return operation()
+}
+
+func (s *Disk) bucketLock(bucket string) *sync.RWMutex {
+	key := encodeName(bucket)
+	s.bucketMu.Lock()
+	defer s.bucketMu.Unlock()
+	lock := s.bucketLocks[key]
+	if lock == nil {
+		lock = &sync.RWMutex{}
+		s.bucketLocks[key] = lock
+	}
+	return lock
 }
 
 func (s *Disk) ensureBucket(bucket string) (string, error) {
