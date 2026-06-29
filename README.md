@@ -15,7 +15,7 @@ duplicate IDs or duplicate content within a bucket.
 Run the service with the in-memory backend on the default port:
 
 ```sh
-go run ./src/cmd
+go run ./cmd/object-server
 ```
 
 Configuration is available through command-line flags or environment variables.
@@ -33,7 +33,7 @@ For example:
 
 ```sh
 OBJECT_STORE_PORT=9090 OBJECT_STORE_BACKEND=disk \
-  OBJECT_STORE_DATA_DIR=./objects go run ./src/cmd
+  OBJECT_STORE_DATA_DIR=./objects go run ./cmd/object-server
 ```
 
 The server binds to loopback by default. Set `--bind-address` explicitly to
@@ -88,3 +88,4 @@ implementation was validated with `go test -race ./...`, `go vet ./...`,
 - Add a Dockerfile and run tests in a container.
 - Use a dedicated end-to-end test framework if the suite grows substantially.
 - Terminate TLS at the service or a trusted reverse proxy.
+- Add performance benchmarks and throughput estimates.

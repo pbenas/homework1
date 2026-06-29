@@ -19,16 +19,18 @@ Important behavior:
 ## Repository structure
 
 - `openapi.yaml` — API source of truth.
-- `src/api/` — generated oapi-codegen models and HTTP adapters.
-- `src/cmd/` — CLI entrypoint and HTTP server lifecycle.
-- `src/service/` — API implementation.
-- `src/store/` — storage interfaces and backends.
+- `cmd/object-server/` — executable entrypoint and dependency wiring.
+- `internal/api/` — generated oapi-codegen models and HTTP adapters.
+- `internal/config/` — CLI and environment configuration.
+- `internal/httpserver/` — HTTP lifecycle, validation, and logging.
+- `internal/service/` — API implementation and consumed storage interface.
+- `internal/store/` — memory and disk storage backends.
 - `test/e2e.sh` — external curl-based integration tests.
 - `test/data/` — end-to-end test payloads.
 
 ## Generated code
 
-Do not edit `src/api/openapi.gen.go` manually.
+Do not edit `internal/api/openapi.gen.go` manually.
 
 After changing `openapi.yaml`, regenerate it with:
 

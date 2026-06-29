@@ -16,18 +16,24 @@ different buckets.
 HTTP request
     |
     v
-generated API adapter (src/api)
+generated API adapter (internal/api)
     |
     v
-service rules (src/service)
+service rules (internal/service)
     |
     v
-memory or disk store (src/store)
+memory or disk store (internal/store)
 ```
 
 ## Packages
 
-### `src/api`
+### `cmd/object-server`
+
+Contains only executable startup and dependency wiring. It loads configuration,
+constructs the selected backend, installs signal handling, and runs the HTTP
+server.
+
+### `internal/api`
 
 Contains code generated from `openapi.yaml` by `oapi-codegen`.
 
@@ -39,21 +45,12 @@ It provides:
 - Serialization of response bodies, status codes, and headers.
 
 `openapi.yaml` is the API source of truth. Do not edit
-`src/api/openapi.gen.go` directly; regenerate it with `go generate ./...`.
+`internal/api/openapi.gen.go` directly; regenerate it with `go generate ./...`.
 
-### `src/cmd`
+### `internal/config`
 
-Contains the executable entrypoint.
-
-It:
-
-- Reads command-line flags and environment variables.
-- Selects and initializes the storage backend.
-- Connects the service implementation to the generated HTTP adapter.
-- Starts the HTTP server.
-- Logs every request with its method, bucket, object ID, status, and duration.
-- Gracefully stops on Ctrl+C or `SIGTERM`, allowing active requests up to ten
-  seconds to finish.
+Parses command-line flags and environment variables into a validated typed
+configuration. Flags take precedence over environment variables.
 
 Flags override environment variables:
 
@@ -65,15 +62,26 @@ Flags override environment variables:
 | `--data-dir` | `OBJECT_STORE_DATA_DIR` | `./data` |
 | `--max-object-size` | `OBJECT_STORE_MAX_OBJECT_SIZE` | `1073741824` |
 
+### `internal/httpserver`
+
+Owns the HTTP server lifecycle and transport concerns. It:
+
+- Starts the HTTP server.
+- Logs every request with its method, bucket, object ID, status, and duration.
+- Validates content types, UTF-8, identifiers, and request sizes.
+- Gracefully stops when its context is cancelled, allowing active requests up
+  to ten seconds to finish.
+
 The loopback default avoids unintentionally exposing the unauthenticated
 service. Request-body size and HTTP timeouts bound resource usage. PUT requests
 must use `text/plain`, contain valid UTF-8, and remain within the configured
 object-size limit. Bucket and object identifiers are capped at 180 UTF-8 bytes.
 
-### `src/service`
+### `internal/service`
 
 Implements the generated strict server interface and contains HTTP-facing
-business rules.
+business rules. Its context-aware storage interface is defined here, where it
+is consumed, rather than by the backend package.
 
 It translates storage results into API responses:
 
@@ -84,9 +92,9 @@ It translates storage results into API responses:
 - Successful reads and deletes become `200 OK`.
 - Unexpected storage errors are returned to the HTTP adapter as server errors.
 
-### `src/store`
+### `internal/store`
 
-Defines the storage interface, shared errors, and both backend implementations.
+Provides shared storage errors and the memory and disk backend implementations.
 All backends are safe for concurrent use.
 
 The memory backend stores object IDs and a per-bucket SHA-256 content index.

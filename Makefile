@@ -1,5 +1,5 @@
 GO ?= go
-CMD ?= ./src/cmd
+CMD ?= ./cmd/object-server
 BIN ?= bin/object-server
 GOVULNCHECK_VERSION ?= v1.5.0
 

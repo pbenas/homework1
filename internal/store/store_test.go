@@ -2,7 +2,7 @@ package store
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,16 +11,23 @@ import (
 	"time"
 )
 
+type testStore interface {
+	Create(context.Context, string, string, []byte) error
+	Get(context.Context, string, string) ([]byte, error)
+	Delete(context.Context, string, string) error
+}
+
 func TestStores(t *testing.T) {
-	factories := map[string]func(*testing.T) Store{
-		"memory": func(*testing.T) Store {
+	factories := map[string]func(*testing.T) testStore{
+		"memory": func(*testing.T) testStore {
 			return NewMemory()
 		},
-		"disk": func(t *testing.T) Store {
+		"disk": func(t *testing.T) testStore {
 			storage, err := NewDisk(t.TempDir())
 			if err != nil {
 				t.Fatalf("NewDisk() error = %v", err)
 			}
+			t.Cleanup(func() { _ = storage.Close() })
 			return storage
 		},
 	}
@@ -30,12 +37,12 @@ func TestStores(t *testing.T) {
 			storage := factory(t)
 			original := []byte("original")
 
-			if err := storage.Create("bucket-a", "first", original); err != nil {
+			if err := storage.Create(context.Background(), "bucket-a", "first", original); err != nil {
 				t.Fatalf("Create() error = %v", err)
 			}
 			original[0] = 'X'
 
-			data, err := storage.Get("bucket-a", "first")
+			data, err := storage.Get(context.Background(), "bucket-a", "first")
 			if err != nil {
 				t.Fatalf("Get() error = %v", err)
 			}
@@ -43,24 +50,24 @@ func TestStores(t *testing.T) {
 				t.Fatalf("Get() = %q", data)
 			}
 			data[0] = 'X'
-			data, err = storage.Get("bucket-a", "first")
+			data, err = storage.Get(context.Background(), "bucket-a", "first")
 			if err != nil || string(data) != "original" {
 				t.Fatalf("second Get() = %q, %v", data, err)
 			}
 
-			assertConflict(t, storage.Create("bucket-a", "first", []byte("other")), "first")
-			assertConflict(t, storage.Create("bucket-a", "second", []byte("original")), "first")
-			if err := storage.Create("bucket-b", "second", []byte("original")); err != nil {
+			assertConflict(t, storage.Create(context.Background(), "bucket-a", "first", []byte("other")), "first")
+			assertConflict(t, storage.Create(context.Background(), "bucket-a", "second", []byte("original")), "first")
+			if err := storage.Create(context.Background(), "bucket-b", "second", []byte("original")); err != nil {
 				t.Fatalf("cross-bucket Create() error = %v", err)
 			}
 
-			if err := storage.Delete("bucket-a", "first"); err != nil {
+			if err := storage.Delete(context.Background(), "bucket-a", "first"); err != nil {
 				t.Fatalf("Delete() error = %v", err)
 			}
-			if _, err := storage.Get("bucket-a", "first"); !errors.Is(err, ErrNotFound) {
+			if _, err := storage.Get(context.Background(), "bucket-a", "first"); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Get() error = %v, want ErrNotFound", err)
 			}
-			if err := storage.Delete("bucket-a", "first"); !errors.Is(err, ErrNotFound) {
+			if err := storage.Delete(context.Background(), "bucket-a", "first"); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("second Delete() error = %v, want ErrNotFound", err)
 			}
 		})
@@ -77,31 +84,31 @@ func TestConflictError(t *testing.T) {
 func TestMemoryHashIndexIsCollisionSafeAndMaintained(t *testing.T) {
 	storage := NewMemory()
 	target := []byte("target")
-	hash := sha256.Sum256(target)
+	hash := digestContent(target)
 	storage.buckets["bucket"] = &memoryBucket{
 		byID: map[string]memoryObject{
 			"collision": {data: []byte("different"), hash: hash},
 		},
-		byHash: map[[sha256.Size]byte][]string{
+		byHash: map[contentDigest][]string{
 			hash: {"collision"},
 		},
 	}
 
-	if err := storage.Create("bucket", "original", target); err != nil {
+	if err := storage.Create(context.Background(), "bucket", "original", target); err != nil {
 		t.Fatalf("Create() with simulated hash collision error = %v", err)
 	}
 	if IDs := storage.buckets["bucket"].byHash[hash]; len(IDs) != 2 {
 		t.Fatalf("hash index IDs = %v, want two collision candidates", IDs)
 	}
-	assertConflict(t, storage.Create("bucket", "duplicate", target), "original")
+	assertConflict(t, storage.Create(context.Background(), "bucket", "duplicate", target), "original")
 
-	if err := storage.Delete("bucket", "original"); err != nil {
+	if err := storage.Delete(context.Background(), "bucket", "original"); err != nil {
 		t.Fatal(err)
 	}
 	if IDs := storage.buckets["bucket"].byHash[hash]; len(IDs) != 1 || IDs[0] != "collision" {
 		t.Fatalf("hash index after delete = %v", IDs)
 	}
-	if err := storage.Delete("bucket", "collision"); err != nil {
+	if err := storage.Delete(context.Background(), "bucket", "collision"); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := storage.buckets["bucket"]; exists {
@@ -134,7 +141,7 @@ func TestDiskClose(t *testing.T) {
 	if err := storage.Close(); err != nil {
 		t.Fatalf("second Close() error = %v", err)
 	}
-	if err := storage.Create("bucket", "id", []byte("data")); err == nil {
+	if err := storage.Create(context.Background(), "bucket", "id", []byte("data")); err == nil {
 		t.Fatal("Create() after Close() error = nil")
 	}
 }
@@ -154,13 +161,13 @@ func TestDiskFilesystemErrors(t *testing.T) {
 	if err := os.WriteFile(blockedBucket, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Create("blocked", "id", nil); err == nil {
+	if err := storage.Create(context.Background(), "blocked", "id", nil); err == nil {
 		t.Fatal("Create() with bucket path file error = nil")
 	}
-	if _, err := storage.Get("blocked", "id"); err == nil || errors.Is(err, ErrNotFound) {
+	if _, err := storage.Get(context.Background(), "blocked", "id"); err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get() error = %v, want filesystem error", err)
 	}
-	if err := storage.Delete("blocked", "id"); err == nil || errors.Is(err, ErrNotFound) {
+	if err := storage.Delete(context.Background(), "blocked", "id"); err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("Delete() error = %v, want filesystem error", err)
 	}
 }
@@ -171,18 +178,18 @@ func TestDiskPersistentIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Create("bucket", "original", []byte("same")); err != nil {
+	if err := first.Create(context.Background(), "bucket", "original", []byte("same")); err != nil {
 		t.Fatal(err)
 	}
 	second, err := NewDisk(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertConflict(t, second.Create("bucket", "duplicate", []byte("same")), "original")
-	if err := second.Delete("bucket", "original"); err != nil {
+	assertConflict(t, second.Create(context.Background(), "bucket", "duplicate", []byte("same")), "original")
+	if err := second.Delete(context.Background(), "bucket", "original"); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.Create("bucket", "replacement", []byte("same")); err != nil {
+	if err := first.Create(context.Background(), "bucket", "replacement", []byte("same")); err != nil {
 		t.Fatalf("Create() after delete error = %v", err)
 	}
 }
@@ -193,14 +200,14 @@ func TestDiskRejectsCorruptContentIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Create("bucket", "original", []byte("same")); err != nil {
+	if err := storage.Create(context.Background(), "bucket", "original", []byte("same")); err != nil {
 		t.Fatal(err)
 	}
-	indexPath := filepath.Join(storage.bucketPath("bucket"), indexDirectory, contentHash([]byte("same")))
+	indexPath := filepath.Join(storage.bucketPath("bucket"), indexDirectory, digestContent([]byte("same")).String())
 	if err := os.WriteFile(indexPath, []byte("../outside"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Create("bucket", "duplicate", []byte("same")); err == nil {
+	if err := storage.Create(context.Background(), "bucket", "duplicate", []byte("same")); err == nil {
 		t.Fatal("Create() with corrupt content index error = nil")
 	}
 }
@@ -218,14 +225,14 @@ func TestDiskMigratesLegacyBucketAndRecoversStaleIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertConflict(t, storage.Create("bucket", "duplicate", []byte("same")), "legacy")
+	assertConflict(t, storage.Create(context.Background(), "bucket", "duplicate", []byte("same")), "legacy")
 
 	staleData := []byte("interrupted")
-	staleIndex := filepath.Join(bucketPath, indexDirectory, contentHash(staleData))
+	staleIndex := filepath.Join(bucketPath, indexDirectory, digestContent(staleData).String())
 	if err := os.WriteFile(staleIndex, []byte(encodeName("missing")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Create("bucket", "recovered", staleData); err != nil {
+	if err := storage.Create(context.Background(), "bucket", "recovered", staleData); err != nil {
 		t.Fatalf("Create() with stale index error = %v", err)
 	}
 }
@@ -243,7 +250,7 @@ func TestDiskResumesInterruptedIndexMigration(t *testing.T) {
 		}
 	}
 	// Simulate termination after only the first legacy object was indexed.
-	if err := os.WriteFile(filepath.Join(indexPath, contentHash([]byte("one"))), []byte(encodeName("first")), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(indexPath, digestContent([]byte("one")).String()), []byte(encodeName("first")), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -251,7 +258,7 @@ func TestDiskResumesInterruptedIndexMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertConflict(t, storage.Create("bucket", "duplicate", []byte("two")), "second")
+	assertConflict(t, storage.Create(context.Background(), "bucket", "duplicate", []byte("two")), "second")
 	if info, err := os.Lstat(filepath.Join(indexPath, indexReadyFile)); err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("migration marker info=%v error=%v", info, err)
 	}
@@ -280,7 +287,7 @@ func TestDiskRejectsCorruptLegacyBuckets(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := storage.Create("bucket", "new", []byte("new")); err == nil {
+			if err := storage.Create(context.Background(), "bucket", "new", []byte("new")); err == nil {
 				t.Fatal("Create() with corrupt legacy bucket error = nil")
 			}
 		})
@@ -307,7 +314,7 @@ func TestDiskConcurrentInstancesDeduplicate(t *testing.T) {
 		go func(i int, storage *Disk) {
 			defer wg.Done()
 			<-start
-			errs <- storage.Create("bucket", string(rune('a'+i)), []byte("shared content"))
+			errs <- storage.Create(context.Background(), "bucket", string(rune('a'+i)), []byte("shared content"))
 		}(i, storage)
 	}
 	close(start)
@@ -344,7 +351,7 @@ func TestDiskBucketLockAllowsReadersAndBlocksWriter(t *testing.T) {
 	errors := make(chan error, 3)
 	for range 2 {
 		go func() {
-			errors <- storage.withBucketLock("bucket", false, func() error {
+			errors <- storage.withBucketLock(context.Background(), "bucket", sharedLock, func() error {
 				readerEntered <- struct{}{}
 				<-readerRelease
 				return nil
@@ -362,7 +369,7 @@ func TestDiskBucketLockAllowsReadersAndBlocksWriter(t *testing.T) {
 	writerEntered := make(chan struct{})
 	writerRelease := make(chan struct{})
 	go func() {
-		errors <- storage.withBucketLock("bucket", true, func() error {
+		errors <- storage.withBucketLock(context.Background(), "bucket", exclusiveLock, func() error {
 			close(writerEntered)
 			<-writerRelease
 			return nil
@@ -388,6 +395,58 @@ func TestDiskBucketLockAllowsReadersAndBlocksWriter(t *testing.T) {
 	}
 }
 
+func TestDiskBucketLockHonorsContextCancellation(t *testing.T) {
+	root := t.TempDir()
+	first, err := NewDisk(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := NewDisk(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	lockErr := make(chan error, 1)
+	go func() {
+		lockErr <- first.withBucketLock(context.Background(), "bucket", exclusiveLock, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err = second.Create(ctx, "bucket", "id", []byte("data"))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Create() error = %v, want context deadline", err)
+	}
+	close(release)
+	if err := <-lockErr; err != nil {
+		t.Fatalf("held bucket lock error = %v", err)
+	}
+}
+
+func TestMemoryHonorsCancelledContext(t *testing.T) {
+	storage := NewMemory()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := storage.Create(ctx, "bucket", "id", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := storage.Get(ctx, "bucket", "id"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if err := storage.Delete(ctx, "bucket", "id"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Delete() error = %v", err)
+	}
+}
+
 func TestDiskRejectsSymlinks(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -399,17 +458,17 @@ func TestDiskRejectsSymlinks(t *testing.T) {
 	if err := os.Symlink(outside, storage.bucketPath("bucket")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if err := storage.Create("bucket", "id", []byte("secret")); err == nil {
+	if err := storage.Create(context.Background(), "bucket", "id", []byte("secret")); err == nil {
 		t.Fatal("Create() through bucket symlink error = nil")
 	}
-	if _, err := storage.Get("bucket", "id"); err == nil {
+	if _, err := storage.Get(context.Background(), "bucket", "id"); err == nil {
 		t.Fatal("Get() through bucket symlink error = nil")
 	}
 
 	if err := os.Remove(storage.bucketPath("bucket")); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Create("bucket", "safe", []byte("safe")); err != nil {
+	if err := storage.Create(context.Background(), "bucket", "safe", []byte("safe")); err != nil {
 		t.Fatal(err)
 	}
 	objectPath := storage.objectPath("bucket", "linked")
@@ -420,10 +479,10 @@ func TestDiskRejectsSymlinks(t *testing.T) {
 	if err := os.Symlink(outsideFile, objectPath); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := storage.Get("bucket", "linked"); err == nil {
+	if _, err := storage.Get(context.Background(), "bucket", "linked"); err == nil {
 		t.Fatal("Get() through object symlink error = nil")
 	}
-	if err := storage.Delete("bucket", "linked"); err == nil {
+	if err := storage.Delete(context.Background(), "bucket", "linked"); err == nil {
 		t.Fatal("Delete() through object symlink error = nil")
 	}
 
@@ -434,7 +493,7 @@ func TestDiskRejectsSymlinks(t *testing.T) {
 	if err := os.Symlink(outside, indexPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Create("index-symlink", "id", []byte("data")); err == nil {
+	if err := storage.Create(context.Background(), "index-symlink", "id", []byte("data")); err == nil {
 		t.Fatal("Create() through index symlink error = nil")
 	}
 }

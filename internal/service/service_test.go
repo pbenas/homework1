@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/pbenas/homework1/src/api"
-	"github.com/pbenas/homework1/src/store"
+	"github.com/pbenas/homework1/internal/api"
+	"github.com/pbenas/homework1/internal/store"
 )
 
 type fakeStore struct {
@@ -17,16 +17,16 @@ type fakeStore struct {
 	deleteErr  error
 }
 
-func (s *fakeStore) Create(_, _ string, data []byte) error {
+func (s *fakeStore) Create(_ context.Context, _, _ string, data []byte) error {
 	s.createData = append([]byte(nil), data...)
 	return s.createErr
 }
 
-func (s *fakeStore) Get(_, _ string) ([]byte, error) {
+func (s *fakeStore) Get(context.Context, string, string) ([]byte, error) {
 	return s.getData, s.getErr
 }
 
-func (s *fakeStore) Delete(_, _ string) error {
+func (s *fakeStore) Delete(context.Context, string, string) error {
 	return s.deleteErr
 }
 

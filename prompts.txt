@@ -1,0 +1,45 @@
+Session prompt summary
+
+1. Save the coding assignment into `tast.md`, then rename it to `task.md` and clean encoded/unknown characters.
+2. Read `task.md` and propose an OpenAPI schema.
+3. Clarify deduplication:
+   - Reject existing object IDs.
+   - Deduplicate identical content within a bucket.
+   - Return `409` with the original ID and `Location`.
+4. Implement the OpenAPI plan.
+5. Generate Go server boilerplate using `oapi-codegen`.
+6. Rename `internal` to `src`.
+7. Add a CLI entrypoint with flag/environment configuration for port and memory/disk backends.
+8. Add Makefile targets:
+   - `run`
+   - `run-disk`
+   - `test`
+   - `build`
+   - `test-e2e`
+   - `coverage`
+9. Make `run-disk` use and print a persistent temporary directory.
+10. Add graceful Ctrl+C shutdown and per-request logging.
+11. Create curl-based e2e tests covering both backends, CRUD, conflicts, and bucket-local deduplication.
+12. Suggest and create `AGENTS.md`.
+13. Add unit tests achieving at least 80% coverage in every package.
+14. Create concise architecture/module documentation under `docs/`.
+15. Audit the implementation against `task.md`, including vulnerabilities and antipatterns.
+16. Use parallel agents to remediate all audit findings and validate the result.
+17. Issue a standalone “upgrade codex” request.
+18. Increase the default maximum object size to 1 GiB.
+19. Suggest performance optimizations focused on hash-based content resolution.
+20. Implement:
+    - SHA-256 indexing for memory deduplication.
+    - Hashing outside disk mutation locks and shared locking for reads.
+21. Request this session prompt summary.
+22. Store the prompt summary in `prompts.txt`.
+23. Review the codebase and suggest improvements for more idiomatic and readable Go.
+24. Provide repository-specific `AGENTS.md` instructions and environment context.
+25. Implement the suggested improvements, including a conventional `cmd`/`internal` layout, focused configuration and HTTP server packages, context-aware storage interfaces, structured logging, and a clearer disk-backend decomposition.
+26. Validate the refactor with formatting, race-enabled unit tests, vetting, end-to-end tests for both backends, vulnerability scanning, module verification, OpenAPI regeneration, cross-platform compilation, and coverage checks.
+27. Update `prompts.txt` with the expanded session summary and model/usage information.
+
+Model and token usage
+
+- Model: Codex, based on GPT-5, gpt-5.6-sol default
+- Token usage: total=1,165,837 input=1,037,911 (+ 42,197,760 cached) output=127,926 (reasoning 45,735)
