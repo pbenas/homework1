@@ -1,0 +1,1 @@
+This fixture deliberately contains more than sixty-four bytes for object-size limit testing.

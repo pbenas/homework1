@@ -64,14 +64,36 @@ wait_for_server() {
 	local base_url="$1"
 	for _ in {1..100}; do
 		if curl --silent --output /dev/null "$base_url/not-a-route" 2>/dev/null; then
-			return
+			return 0
 		fi
 		if ! kill -0 "$PID" 2>/dev/null; then
-			fail "server exited during startup"
+			return 1
 		fi
 		sleep 0.05
 	done
-	fail "server did not become ready"
+	return 1
+}
+
+start_server() {
+	local backend="$1"
+	local base_port="$2"
+	local attempt port
+	for attempt in {0..19}; do
+		port=$((base_port + attempt))
+		OBJECT_STORE_PORT="$port" \
+			OBJECT_STORE_BACKEND="$backend" \
+			OBJECT_STORE_DATA_DIR="$WORK/disk-data" \
+			OBJECT_STORE_MAX_OBJECT_SIZE=64 \
+			"$BINARY" >"$WORK/server.log" 2>&1 &
+		PID=$!
+		if wait_for_server "http://127.0.0.1:$port"; then
+			SERVER_PORT="$port"
+			return
+		fi
+		wait "$PID" 2>/dev/null || true
+		PID=""
+	done
+	fail "server did not become ready on any candidate port"
 }
 
 stop_server() {
@@ -84,21 +106,30 @@ stop_server() {
 
 run_cases() {
 	local backend="$1"
-	local port="$2"
-	local base_url="http://127.0.0.1:$port"
+	local base_port="$2"
+	start_server "$backend" "$base_port"
+	local base_url="http://127.0.0.1:$SERVER_PORT"
 	local bucket_a="$base_url/objects/bucket-a"
 	local bucket_b="$base_url/objects/bucket-b"
 
 	echo "Testing $backend backend"
-	OBJECT_STORE_PORT="$port" \
-		OBJECT_STORE_BACKEND="$backend" \
-		OBJECT_STORE_DATA_DIR="$WORK/disk-data" \
-		"$BINARY" >"$WORK/server.log" 2>&1 &
-	PID=$!
-	wait_for_server "$base_url"
 
 	# Missing objects return 404.
 	request 404 "$bucket_a/missing"
+
+	# Invalid media types, text, object sizes, and identifiers are rejected.
+	request 415 -X PUT --data-binary "@$DATA/object-a.txt" "$bucket_a/missing-content-type"
+	request 415 -X PUT -H "Content-Type: application/json" \
+		--data-binary "@$DATA/object-a.txt" "$bucket_a/json"
+	printf '\377' >"$WORK/invalid-utf8"
+	request 400 -X PUT -H "Content-Type: text/plain" \
+		--data-binary "@$WORK/invalid-utf8" "$bucket_a/invalid-utf8"
+	request 413 -X PUT -H "Content-Type: text/plain" \
+		--data-binary "@$DATA/oversized.txt" "$bucket_a/oversized"
+	local long_id
+	long_id="$(printf 'a%.0s' {1..181})"
+	request 400 -X PUT -H "Content-Type: text/plain" \
+		--data-binary "valid" "$bucket_a/$long_id"
 
 	# Create and retrieve an object.
 	request 201 -X PUT -H "Content-Type: text/plain" \
@@ -139,8 +170,8 @@ run_cases() {
 [[ -f "$DATA/object-a.txt" && -f "$DATA/object-b.txt" ]] ||
 	fail "test fixtures are missing from $DATA"
 
-BASE_PORT=$((20000 + ($$ % 10000)))
+BASE_PORT=$((20000 + (RANDOM % 20000)))
 run_cases memory "$BASE_PORT"
-run_cases disk "$((BASE_PORT + 1))"
+run_cases disk "$((BASE_PORT + 100))"
 
 echo "All end-to-end tests passed"

@@ -305,11 +305,27 @@ func (response DeleteObject200Response) VisitDeleteObjectResponse(w http.Respons
 	return nil
 }
 
+type DeleteObject400Response struct {
+}
+
+func (response DeleteObject400Response) VisitDeleteObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
 type DeleteObject404Response struct {
 }
 
 func (response DeleteObject404Response) VisitDeleteObjectResponse(w http.ResponseWriter) error {
 	w.WriteHeader(404)
+	return nil
+}
+
+type DeleteObject500Response struct {
+}
+
+func (response DeleteObject500Response) VisitDeleteObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(500)
 	return nil
 }
 
@@ -333,11 +349,27 @@ func (response GetObject200TextResponse) VisitGetObjectResponse(w http.ResponseW
 	return err
 }
 
+type GetObject400Response struct {
+}
+
+func (response GetObject400Response) VisitGetObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
 type GetObject404Response struct {
 }
 
 func (response GetObject404Response) VisitGetObjectResponse(w http.ResponseWriter) error {
 	w.WriteHeader(404)
+	return nil
+}
+
+type GetObject500Response struct {
+}
+
+func (response GetObject500Response) VisitGetObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(500)
 	return nil
 }
 
@@ -365,6 +397,14 @@ func (response CreateObject201JSONResponse) VisitCreateObjectResponse(w http.Res
 	return err
 }
 
+type CreateObject400Response struct {
+}
+
+func (response CreateObject400Response) VisitCreateObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(400)
+	return nil
+}
+
 type CreateObject409ResponseHeaders struct {
 	Location string
 }
@@ -385,6 +425,30 @@ func (response CreateObject409JSONResponse) VisitCreateObjectResponse(w http.Res
 	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
+}
+
+type CreateObject413Response struct {
+}
+
+func (response CreateObject413Response) VisitCreateObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(413)
+	return nil
+}
+
+type CreateObject415Response struct {
+}
+
+func (response CreateObject415Response) VisitCreateObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(415)
+	return nil
+}
+
+type CreateObject500Response struct {
+}
+
+func (response CreateObject500Response) VisitCreateObjectResponse(w http.ResponseWriter) error {
+	w.WriteHeader(500)
+	return nil
 }
 
 // StrictServerInterface represents all server handlers.

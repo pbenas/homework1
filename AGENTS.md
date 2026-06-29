@@ -46,6 +46,7 @@ make run-disk  # Run with disk storage in a new temporary directory
 make test      # Run Go tests
 make test-e2e  # Build and run external tests against both backends
 make coverage  # Run unit tests and print overall coverage
+make vulncheck # Scan reachable code for known vulnerabilities
 make build     # Build bin/object-server
 ```
 
@@ -56,7 +57,12 @@ gofmt -w <changed-go-files>
 go vet ./...
 make test
 make test-e2e
+make vulncheck
 ```
+
+Use Go 1.25.11 or newer. The module's `go` directive intentionally includes the
+security patch level so older vulnerable toolchains are not used to build the
+server.
 
 ## Configuration
 
@@ -65,8 +71,10 @@ Command-line flags override environment variables.
 | Flag | Environment variable | Default |
 | --- | --- | --- |
 | `--port` | `OBJECT_STORE_PORT` | `8080` |
+| `--bind-address` | `OBJECT_STORE_BIND_ADDRESS` | `127.0.0.1` |
 | `--backend` | `OBJECT_STORE_BACKEND` | `memory` |
 | `--data-dir` | `OBJECT_STORE_DATA_DIR` | `./data` |
+| `--max-object-size` | `OBJECT_STORE_MAX_OBJECT_SIZE` | `1073741824` |
 
 Supported backend values are `memory` and `disk`.
 
@@ -75,6 +83,8 @@ Supported backend values are `memory` and `disk`.
 - Successful creation returns `201` and `{"id":"<objectID>"}`.
 - An occupied ID returns `409`, referencing the existing ID.
 - Duplicate content in the same bucket returns `409`, referencing the original object through both the response body and `Location` header.
+- PUT accepts valid UTF-8 `text/plain` bodies up to the configured object-size limit.
+- Bucket and object identifiers are limited to 180 UTF-8 bytes.
 - Missing GET and DELETE requests return `404`.
 - Successful DELETE requests return `200`.
 - Request logs must include the HTTP method, bucket, object ID, response status, and duration.

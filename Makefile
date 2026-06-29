@@ -1,8 +1,9 @@
 GO ?= go
 CMD ?= ./src/cmd
 BIN ?= bin/object-server
+GOVULNCHECK_VERSION ?= v1.5.0
 
-.PHONY: run run-disk test test-e2e coverage build
+.PHONY: run run-disk test test-e2e coverage vulncheck build
 
 run:
 	$(GO) run $(CMD)
@@ -23,6 +24,9 @@ coverage:
 		trap 'rm -f "$$COVERAGE_FILE"' EXIT; \
 		$(GO) test ./... -covermode=atomic -coverprofile="$$COVERAGE_FILE"; \
 		$(GO) tool cover -func="$$COVERAGE_FILE" | tail -n 1
+
+vulncheck:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 build:
 	mkdir -p $(dir $(BIN))

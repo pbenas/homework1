@@ -8,7 +8,7 @@ info:
     may be stored independently in different buckets.
 
 servers:
-  - url: http://localhost:{port}
+  - url: http://127.0.0.1:{port}
     description: Locally running object storage service
     variables:
       port:
@@ -75,6 +75,14 @@ paths:
                 existingObject:
                   value:
                     id: original-object
+        "400":
+          description: The identifiers or UTF-8 request body are invalid.
+        "413":
+          description: The request body exceeds the configured object-size limit.
+        "415":
+          description: The request does not use the text/plain UTF-8 media type.
+        "500":
+          description: An internal storage or server error occurred.
 
     get:
       tags:
@@ -93,6 +101,10 @@ paths:
                   value: Hello, world!
         "404":
           description: Object not found.
+        "400":
+          description: A bucket or object identifier is invalid.
+        "500":
+          description: An internal storage or server error occurred.
 
     delete:
       tags:
@@ -104,6 +116,10 @@ paths:
           description: Object deleted.
         "404":
           description: Object not found.
+        "400":
+          description: A bucket or object identifier is invalid.
+        "500":
+          description: An internal storage or server error occurred.
 
 components:
   parameters:
@@ -115,6 +131,7 @@ components:
       schema:
         type: string
         minLength: 1
+        maxLength: 180
         pattern: "^[^/]+$"
       example: documents
 
@@ -126,6 +143,7 @@ components:
       schema:
         type: string
         minLength: 1
+        maxLength: 180
         pattern: "^[^/]+$"
       example: welcome
 

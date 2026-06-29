@@ -60,8 +60,15 @@ Flags override environment variables:
 | Flag | Environment variable | Default |
 | --- | --- | --- |
 | `--port` | `OBJECT_STORE_PORT` | `8080` |
+| `--bind-address` | `OBJECT_STORE_BIND_ADDRESS` | `127.0.0.1` |
 | `--backend` | `OBJECT_STORE_BACKEND` | `memory` |
 | `--data-dir` | `OBJECT_STORE_DATA_DIR` | `./data` |
+| `--max-object-size` | `OBJECT_STORE_MAX_OBJECT_SIZE` | `1073741824` |
+
+The loopback default avoids unintentionally exposing the unauthenticated
+service. Request-body size and HTTP timeouts bound resource usage. PUT requests
+must use `text/plain`, contain valid UTF-8, and remain within the configured
+object-size limit. Bucket and object identifiers are capped at 180 UTF-8 bytes.
 
 ### `src/service`
 
@@ -87,10 +94,18 @@ content. Data is copied when written and read so callers cannot mutate stored
 objects.
 
 The disk backend stores one directory per bucket and one file per object.
-Bucket and object names are URL-safe base64 encoded before becoming filesystem
-paths, preventing path traversal. Writes use a temporary file followed by an
-atomic link. Duplicate content is detected by comparing files within the target
-bucket.
+Bucket and object names are URL-safe base64 encoded, and all data access uses
+Go's root-relative filesystem API to prevent symlink and path traversal outside
+the configured data directory. A persistent SHA-256 index provides constant-time
+duplicate-content lookups; an explicit completion marker lets interrupted
+legacy-index migrations resume safely. Per-bucket advisory locks serialize
+separate server processes sharing the directory, while exclusive file creation
+and stale-index recovery make writes interruption-safe.
+
+The disk backend's cross-process locking uses Unix `flock` and `O_NOFOLLOW`, so
+the current implementation is supported on Unix-like operating systems. The
+server closes its rooted filesystem handle during graceful shutdown, with an
+automatic runtime cleanup as a fallback.
 
 ## Request behavior
 
@@ -107,4 +122,6 @@ deleting or reading an absent object returns `404`.
 - Package unit tests exercise the generated API, CLI, service, and both stores.
 - `make coverage` runs unit tests and prints aggregate coverage.
 - `make test-e2e` builds the binary and uses `curl` against both backends.
+- `make vulncheck` runs the pinned Go vulnerability scanner against reachable
+  code and the standard library used by the configured toolchain.
 - End-to-end request bodies are stored in `test/data`.

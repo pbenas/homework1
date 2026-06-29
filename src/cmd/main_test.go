@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/pbenas/homework1/src/store"
 )
 
 func TestParseConfigDefaults(t *testing.T) {
@@ -16,28 +20,34 @@ func TestParseConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseConfig() error = %v", err)
 	}
-	if cfg.port != 8080 || cfg.backend != "memory" || cfg.dataDir != "./data" {
+	if cfg.port != 8080 || cfg.bindAddress != "127.0.0.1" || cfg.backend != "memory" ||
+		cfg.dataDir != "./data" || cfg.maxObjectSize != defaultMaxObjectSize {
 		t.Fatalf("parseConfig() = %+v", cfg)
 	}
 }
 
 func TestParseConfigEnvironmentAndFlagPrecedence(t *testing.T) {
 	environment := map[string]string{
-		envPort:    "9000",
-		envBackend: "disk",
-		envDataDir: "/environment-data",
+		envPort:          "9000",
+		envBindAddress:   "127.0.0.2",
+		envBackend:       "disk",
+		envDataDir:       "/environment-data",
+		envMaxObjectSize: "2048",
 	}
 	getenv := func(key string) string { return environment[key] }
 
 	cfg, err := parseConfig([]string{
 		"--port=9001",
+		"--bind-address=::1",
 		"--backend=memory",
 		"--data-dir=/flag-data",
+		"--max-object-size=1024",
 	}, getenv)
 	if err != nil {
 		t.Fatalf("parseConfig() error = %v", err)
 	}
-	if cfg.port != 9001 || cfg.backend != "memory" || cfg.dataDir != "/flag-data" {
+	if cfg.port != 9001 || cfg.bindAddress != "::1" || cfg.backend != "memory" ||
+		cfg.dataDir != "/flag-data" || cfg.maxObjectSize != 1024 {
 		t.Fatalf("parseConfig() = %+v", cfg)
 	}
 }
@@ -50,6 +60,8 @@ func TestParseConfigRejectsInvalidValues(t *testing.T) {
 		{name: "port too low", args: []string{"--port=0"}},
 		{name: "port too high", args: []string{"--port=65536"}},
 		{name: "unknown backend", args: []string{"--backend=remote"}},
+		{name: "invalid bind address", args: []string{"--bind-address=localhost"}},
+		{name: "zero object size", args: []string{"--max-object-size=0"}},
 		{name: "empty disk directory", args: []string{"--backend=disk", "--data-dir="}},
 		{name: "unknown flag", args: []string{"--unknown"}},
 		{name: "positional argument", args: []string{"unexpected"}},
@@ -61,6 +73,18 @@ func TestParseConfigRejectsInvalidValues(t *testing.T) {
 				t.Fatal("parseConfig() error = nil")
 			}
 		})
+	}
+}
+
+func TestParseConfigRejectsInvalidEnvironmentObjectSize(t *testing.T) {
+	_, err := parseConfig(nil, func(key string) string {
+		if key == envMaxObjectSize {
+			return "many"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("parseConfig() error = nil")
 	}
 }
 
@@ -132,6 +156,91 @@ func TestResponseRecorder(t *testing.T) {
 	recorder.WriteHeader(http.StatusCreated)
 	if recorder.status != http.StatusOK || underlying.Code != http.StatusOK || underlying.Body.String() != "body" {
 		t.Fatalf("recorder=%+v, response=%+v", recorder, underlying)
+	}
+}
+
+func TestResponseRecorderPreservesControllerFeatures(t *testing.T) {
+	underlying := httptest.NewRecorder()
+	recorder := &responseRecorder{ResponseWriter: underlying}
+	if err := http.NewResponseController(recorder).Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+	if _, err := recorder.ReadFrom(strings.NewReader("streamed")); err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if underlying.Body.String() != "streamed" {
+		t.Fatalf("body = %q", underlying.Body.String())
+	}
+}
+
+func TestRequestLoggerRecoversAndLogsPanic(t *testing.T) {
+	var output bytes.Buffer
+	handler := requestLogger(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("broken handler")
+	}), log.New(&output, "", 0))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/panic", nil))
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "internal server error\n" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{"panic method=GET", "broken handler", "status=500"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("log output %q does not contain %q", output.String(), expected)
+		}
+	}
+}
+
+func TestHTTPValidation(t *testing.T) {
+	handler := newHTTPHandler(store.NewMemory(), 4, log.New(io.Discard, "", 0))
+	tests := []struct {
+		name        string
+		path        string
+		contentType string
+		body        []byte
+		want        int
+	}{
+		{name: "valid", path: "/objects/bucket/id", contentType: "text/plain; charset=utf-8", body: []byte("text"), want: http.StatusCreated},
+		{name: "missing content type", path: "/objects/bucket/no-content-type", body: []byte("text"), want: http.StatusUnsupportedMediaType},
+		{name: "wrong content type", path: "/objects/bucket/json", contentType: "application/json", body: []byte("text"), want: http.StatusUnsupportedMediaType},
+		{name: "wrong charset", path: "/objects/bucket/latin", contentType: "text/plain; charset=iso-8859-1", body: []byte("text"), want: http.StatusUnsupportedMediaType},
+		{name: "too large", path: "/objects/bucket/large", contentType: "text/plain", body: []byte("large"), want: http.StatusRequestEntityTooLarge},
+		{name: "invalid utf8", path: "/objects/bucket/invalid", contentType: "text/plain", body: []byte{0xff}, want: http.StatusBadRequest},
+		{name: "long identifier", path: "/objects/bucket/" + strings.Repeat("a", maxIdentifierBytes+1), contentType: "text/plain", body: []byte("text"), want: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPut, test.path, bytes.NewReader(test.body))
+			if test.contentType != "" {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body = %q", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+}
+
+type failingStore struct{}
+
+func (failingStore) Create(string, string, []byte) error { return errors.New("secret /storage/path") }
+func (failingStore) Get(string, string) ([]byte, error) {
+	return nil, errors.New("secret /storage/path")
+}
+func (failingStore) Delete(string, string) error { return errors.New("secret /storage/path") }
+
+func TestHTTPHandlerHidesInternalErrors(t *testing.T) {
+	var output bytes.Buffer
+	handler := newHTTPHandler(failingStore{}, 10, log.New(&output, "", 0))
+	request := httptest.NewRequest(http.MethodGet, "/objects/bucket/id", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "internal server error\n" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "secret") || !strings.Contains(output.String(), "secret /storage/path") {
+		t.Fatalf("response = %q, log = %q", response.Body.String(), output.String())
 	}
 }
 

@@ -246,3 +246,58 @@ func TestGeneratedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratedErrorResponses(t *testing.T) {
+	deleteResponses := []struct {
+		status   int
+		response DeleteObjectResponseObject
+	}{
+		{http.StatusBadRequest, DeleteObject400Response{}},
+		{http.StatusInternalServerError, DeleteObject500Response{}},
+	}
+	for _, test := range deleteResponses {
+		response := httptest.NewRecorder()
+		if err := test.response.VisitDeleteObjectResponse(response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != test.status {
+			t.Errorf("DELETE response status = %d, want %d", response.Code, test.status)
+		}
+	}
+
+	getResponses := []struct {
+		status   int
+		response GetObjectResponseObject
+	}{
+		{http.StatusBadRequest, GetObject400Response{}},
+		{http.StatusInternalServerError, GetObject500Response{}},
+	}
+	for _, test := range getResponses {
+		response := httptest.NewRecorder()
+		if err := test.response.VisitGetObjectResponse(response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != test.status {
+			t.Errorf("GET response status = %d, want %d", response.Code, test.status)
+		}
+	}
+
+	createResponses := []struct {
+		status   int
+		response CreateObjectResponseObject
+	}{
+		{http.StatusBadRequest, CreateObject400Response{}},
+		{http.StatusRequestEntityTooLarge, CreateObject413Response{}},
+		{http.StatusUnsupportedMediaType, CreateObject415Response{}},
+		{http.StatusInternalServerError, CreateObject500Response{}},
+	}
+	for _, test := range createResponses {
+		response := httptest.NewRecorder()
+		if err := test.response.VisitCreateObjectResponse(response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != test.status {
+			t.Errorf("PUT response status = %d, want %d", response.Code, test.status)
+		}
+	}
+}
